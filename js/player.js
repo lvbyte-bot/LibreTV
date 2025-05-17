@@ -399,12 +399,12 @@ function initPlayer(videoUrl, sourceCode) {
         contextmenu: [                   // 自定义右键菜单
             {
                 text: '关于 JoyyaTV',
-                link: 'https://github.com/JoyyaSpark/JoyyaTV'
+                link: 'https://github.com/lvbyte-bot/LibreTV'
             },
             {
                 text: '问题反馈',
                 click: (player) => {
-                    window.open('https://github.com/JoyyaSpark/JoyyaTV/issues', '_blank');
+                    window.open('https://github.com/lvbyte-bot/LibreTV/issues', '_blank');
                 }
             }
         ],

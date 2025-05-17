@@ -148,7 +148,7 @@ function addVersionInfoToFooter() {
                 const updateBtn = versionElement.querySelector('span');
                 if (updateBtn) {
                     updateBtn.addEventListener('click', () => {
-                        window.open('https://github.com/JoyyaSpark/JoyyaTV', '_blank');
+                        window.open('https://github.com/lvbyte-bot/LibreTV', '_blank');
                     });
                 }
             }, 100);
