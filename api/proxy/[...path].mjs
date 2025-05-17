@@ -1,6 +1,29 @@
 // /api/proxy/[...path].mjs - Vercel Serverless Function (ES Module)
 
-import fetch from 'node-fetch';
+// 使用动态导入node-fetch，确保在Vercel环境中正确加载
+let fetch;
+try {
+    // 尝试导入node-fetch
+    const nodeFetch = await import('node-fetch');
+    fetch = nodeFetch.default;
+    console.log('[代理初始化] 成功导入node-fetch');
+} catch (error) {
+    // 如果导入失败，使用全局fetch（如果可用）
+    console.warn(`[代理初始化] 导入node-fetch失败: ${error.message}`);
+    console.warn('[代理初始化] 尝试使用全局fetch');
+
+    if (typeof globalThis.fetch === 'function') {
+        fetch = globalThis.fetch;
+        console.log('[代理初始化] 使用全局fetch');
+    } else {
+        console.error('[代理初始化] 无法找到可用的fetch实现');
+        // 创建一个错误处理函数作为备用
+        fetch = async () => {
+            throw new Error('Fetch API不可用，请安装node-fetch依赖');
+        };
+    }
+}
+
 import { URL } from 'url'; // 使用 Node.js 内置 URL 处理
 
 // --- 配置 (从环境变量读取) ---
@@ -46,6 +69,31 @@ function logDebug(message) {
     }
 }
 
+// 增强版日志函数，始终记录到Vercel日志
+function logInfo(message) {
+    console.info(`[代理信息] ${message}`);
+    if (DEBUG_ENABLED) {
+        console.log(`[代理日志] ${message}`);
+    }
+}
+
+function logWarning(message) {
+    console.warn(`[代理警告] ${message}`);
+    if (DEBUG_ENABLED) {
+        console.log(`[代理日志警告] ${message}`);
+    }
+}
+
+function logError(message, error = null) {
+    console.error(`[代理错误] ${message}`);
+    if (error && error.stack) {
+        console.error(`[代理错误堆栈] ${error.stack}`);
+    }
+    if (DEBUG_ENABLED) {
+        console.log(`[代理日志错误] ${message}`);
+    }
+}
+
 /**
  * 从代理请求路径中提取编码后的目标 URL。
  * @param {string} encodedPath - URL 编码后的路径部分 (例如 "https%3A%2F%2F...")
@@ -53,26 +101,66 @@ function logDebug(message) {
  */
 function getTargetUrlFromPath(encodedPath) {
     if (!encodedPath) {
-        logDebug("getTargetUrlFromPath 收到空路径。");
+        logWarning("getTargetUrlFromPath 收到空路径。");
         return null;
     }
+
+    // 记录原始输入
+    logInfo(`原始编码路径: ${encodedPath}`);
+
     try {
-        const decodedUrl = decodeURIComponent(encodedPath);
+        // 尝试多次解码，处理可能的多层编码
+        let decodedUrl = encodedPath;
+        let prevDecodedUrl = '';
+        let decodingAttempts = 0;
+        const maxDecodingAttempts = 3; // 最多尝试解码3次
+
+        while (decodedUrl !== prevDecodedUrl && decodingAttempts < maxDecodingAttempts) {
+            prevDecodedUrl = decodedUrl;
+            try {
+                decodedUrl = decodeURIComponent(prevDecodedUrl);
+                decodingAttempts++;
+            } catch (decodeError) {
+                // 如果解码失败，使用上一次成功的结果
+                decodedUrl = prevDecodedUrl;
+                logWarning(`第${decodingAttempts}次URL解码失败: ${decodeError.message}`);
+                break;
+            }
+        }
+
+        logInfo(`解码后URL (${decodingAttempts}次): ${decodedUrl}`);
+
         // 基础检查，看是否像一个 HTTP/HTTPS URL
         if (decodedUrl.match(/^https?:\/\/.+/i)) {
             return decodedUrl;
         } else {
-            logDebug(`无效的解码 URL 格式: ${decodedUrl}`);
+            logWarning(`无效的解码 URL 格式: ${decodedUrl}`);
+
             // 备选检查：原始路径是否未编码但看起来像 URL？
             if (encodedPath.match(/^https?:\/\/.+/i)) {
-                logDebug(`警告: 路径未编码但看起来像 URL: ${encodedPath}`);
+                logWarning(`路径未编码但看起来像 URL: ${encodedPath}`);
                 return encodedPath;
             }
+
+            // 最后尝试：检查是否缺少协议前缀
+            if (decodedUrl.match(/^www\..+\..+/i)) {
+                const urlWithProtocol = `https://${decodedUrl}`;
+                logWarning(`尝试添加协议前缀: ${urlWithProtocol}`);
+                return urlWithProtocol;
+            }
+
             return null;
         }
     } catch (e) {
         // 捕获解码错误 (例如格式错误的 URI)
-        logDebug(`解码目标 URL 出错: ${encodedPath} - ${e.message}`);
+        logError(`解码目标 URL 出错: ${encodedPath}`, e);
+
+        // 如果原始路径看起来像URL，尝试直接返回
+        if (encodedPath.match(/^https?:\/\/.+/i)) {
+            logWarning(`解码失败但原始路径看起来像URL，直接使用: ${encodedPath}`);
+            return encodedPath;
+        }
+
         return null;
     }
 }
@@ -147,16 +235,28 @@ async function fetchContentWithType(targetUrl, requestHeaders) {
     // 清理空值的头
     Object.keys(headers).forEach(key => headers[key] === undefined || headers[key] === null || headers[key] === '' ? delete headers[key] : {});
 
-    logDebug(`准备请求目标: ${targetUrl}，请求头: ${JSON.stringify(headers)}`);
+    logInfo(`准备请求目标: ${targetUrl}`);
+    logDebug(`请求头: ${JSON.stringify(headers)}`);
 
     try {
+        // 添加超时控制
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 15000); // 15秒超时
+
         // 发起 fetch 请求
-        const response = await fetch(targetUrl, { headers, redirect: 'follow' });
+        const response = await fetch(targetUrl, {
+            headers,
+            redirect: 'follow',
+            signal: controller.signal
+        });
+
+        // 清除超时
+        clearTimeout(timeoutId);
 
         // 检查响应是否成功
         if (!response.ok) {
             const errorBody = await response.text().catch(() => ''); // 尝试获取错误响应体
-            logDebug(`请求失败: ${response.status} ${response.statusText} - ${targetUrl}`);
+            logError(`请求失败: ${response.status} ${response.statusText} - ${targetUrl}`);
             // 创建一个包含状态码的错误对象
             const err = new Error(`HTTP 错误 ${response.status}: ${response.statusText}. URL: ${targetUrl}. Body: ${errorBody.substring(0, 200)}`);
             err.status = response.status; // 将状态码附加到错误对象
@@ -166,13 +266,21 @@ async function fetchContentWithType(targetUrl, requestHeaders) {
         // 读取响应内容
         const content = await response.text();
         const contentType = response.headers.get('content-type') || '';
-        logDebug(`请求成功: ${targetUrl}, Content-Type: ${contentType}, 内容长度: ${content.length}`);
+        logInfo(`请求成功: ${targetUrl}, Content-Type: ${contentType}, 内容长度: ${content.length}`);
         // 返回结果
         return { content, contentType, responseHeaders: response.headers };
 
     } catch (error) {
+        // 检查是否是超时错误
+        if (error.name === 'AbortError') {
+            logError(`请求超时 ${targetUrl}: 请求超过15秒未完成`, error);
+            const timeoutError = new Error(`请求目标 URL 超时 ${targetUrl}: 请求超过15秒未完成`);
+            timeoutError.status = 504; // Gateway Timeout
+            throw timeoutError;
+        }
+
         // 捕获 fetch 本身的错误（网络、超时等）或上面抛出的 HTTP 错误
-        logDebug(`请求异常 ${targetUrl}: ${error.message}`);
+        logError(`请求异常 ${targetUrl}: ${error.message}`, error);
         // 重新抛出，确保包含原始错误信息
         throw new Error(`请求目标 URL 失败 ${targetUrl}: ${error.message}`);
     }
@@ -406,17 +514,22 @@ export default async function handler(req, res) {
 
     // ---- 结束主处理逻辑的 try 块 ----
     } catch (error) { // ---- 捕获处理过程中的任何错误 ----
-        // **检查这个错误是否是 "Assignment to constant variable"**
-        console.error(`[代理错误处理 V3] 捕获错误！目标: ${targetUrl || '解析失败'} | 错误类型: ${error.constructor.name} | 错误消息: ${error.message}`);
-        console.error(`[代理错误堆栈 V3] ${error.stack}`); // 记录完整的错误堆栈信息
+        // 记录错误详情
+        logError(`捕获错误！目标: ${targetUrl || '解析失败'} | 错误类型: ${error.constructor.name} | 错误消息: ${error.message}`, error);
 
         // 特别标记 "Assignment to constant variable" 错误
         if (error instanceof TypeError && error.message.includes("Assignment to constant variable")) {
-             console.error("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-             console.error("捕获到 'Assignment to constant variable' 错误!");
-             console.error("请再次检查函数代码及所有辅助函数中，是否有 const 声明的变量被重新赋值。");
-             console.error("错误堆栈指向:", error.stack);
-             console.error("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+             logError("捕获到 'Assignment to constant variable' 错误! 请检查代码中是否有const变量被重新赋值。", error);
+        }
+
+        // 特别标记 "node-fetch" 相关错误
+        if (error.message && error.message.includes('node-fetch')) {
+            logError("捕获到 node-fetch 相关错误! 请确保已正确安装node-fetch依赖。", error);
+        }
+
+        // 特别标记 URL 解析错误
+        if (error.message && (error.message.includes('URL') || error.message.includes('url'))) {
+            logError("捕获到 URL 解析相关错误! 请检查URL格式是否正确。", error);
         }
 
         // 尝试从错误对象获取状态码，否则默认为 500
@@ -429,11 +542,14 @@ export default async function handler(req, res) {
              res.status(statusCode).json({
                 success: false,
                 error: `代理处理错误: ${error.message}`, // 返回错误消息给前端
-                targetUrl: targetUrl // 包含目标 URL 以便调试
+                targetUrl: targetUrl, // 包含目标 URL 以便调试
+                errorType: error.constructor.name, // 添加错误类型
+                errorCode: error.code || 'UNKNOWN', // 添加错误代码（如果有）
+                statusCode: statusCode // 添加状态码
             });
         } else {
             // 如果响应头已发送，无法再发送 JSON 错误
-            console.error("[代理错误处理 V3] 响应头已发送，无法发送 JSON 错误响应。");
+            logError("响应头已发送，无法发送 JSON 错误响应。");
             // 尝试结束响应
              if (!res.writableEnded) {
                  res.end();
@@ -441,6 +557,7 @@ export default async function handler(req, res) {
         }
     } finally {
          // 记录请求处理结束
+         logInfo('代理请求处理结束');
          console.info('--- Vercel 代理请求结束 ---');
     }
 }
