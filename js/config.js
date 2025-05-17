@@ -12,9 +12,9 @@ const PASSWORD_CONFIG = {
 
 // 网站信息配置
 const SITE_CONFIG = {
-    name: 'LibreTV',
-    url: 'https://libretv.is-an.org',
-    description: '免费在线视频搜索与观看平台',
+    name: 'JoyyaTV',
+    url: 'https://Joyyatv.is-an.org',
+    description: 'Joyya的在线影视站',
     logo: './image/retrotv_5520.png',
     version: '1.0.3'
 };
