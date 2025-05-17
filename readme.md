@@ -3,7 +3,7 @@
 <div align="center">
   <img src="./image/retrotv_5520.png" alt="JoyyaTV Logo" width="120">
   <br>
-  <p><strong>自由观影，畅享精彩</strong></p>
+  <p><strong>Joyya专属的观影小站！！</strong></p>
 </div>
 
 ## 📺 项目简介
