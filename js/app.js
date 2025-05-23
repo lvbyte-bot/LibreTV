@@ -1,5 +1,5 @@
 // 全局变量
-let selectedAPIs = JSON.parse(localStorage.getItem('selectedAPIs') || '["tyyszy","dyttzy", "bfzy", "ruyi"]'); // 默认选中天涯资源、暴风资源和如意资源
+let selectedAPIs = JSON.parse(localStorage.getItem('selectedAPIs') || '["tyyszy","dyttzy", "bfzy", "ruyi"]'); // 默认选中资源
 let customAPIs = JSON.parse(localStorage.getItem('customAPIs') || '[]'); // 存储自定义API列表
 
 // 添加当前播放的集数索引
@@ -27,7 +27,7 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // 设置默认API选择（如果是第一次加载）
     if (!localStorage.getItem('hasInitializedDefaults')) {
-        // 仅选择天涯资源、暴风资源和如意资源
+        // 默认选中资源
         selectedAPIs = ["tyyszy","bfzy","dyttzy", "ruyi"];
         localStorage.setItem('selectedAPIs', JSON.stringify(selectedAPIs));
         
@@ -888,6 +888,50 @@ async function search() {
     }
 }
 
+// 切换清空按钮的显示状态
+function toggleClearButton() {
+    const searchInput = document.getElementById('searchInput');
+    const clearButton = document.getElementById('clearSearchInput');
+    if (searchInput.value !== '') {
+        clearButton.classList.remove('hidden');
+    } else {
+        clearButton.classList.add('hidden');
+    }
+}
+
+// 清空搜索框内容
+function clearSearchInput() {
+    const searchInput = document.getElementById('searchInput');
+    searchInput.value = '';
+    const clearButton = document.getElementById('clearSearchInput');
+    clearButton.classList.add('hidden');
+}
+
+// 劫持搜索框的value属性以检测外部修改
+function hookInput() {
+    const input = document.getElementById('searchInput');
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+
+    // 重写 value 属性的 getter 和 setter
+    Object.defineProperty(input, 'value', {
+        get: function() {
+            // 确保读取时返回字符串（即使原始值为 undefined/null）
+            const originalValue = descriptor.get.call(this);
+            return originalValue != null ? String(originalValue) : '';
+        },
+        set: function(value) {
+            // 显式将值转换为字符串后写入
+            const strValue = String(value);
+            descriptor.set.call(this, strValue);
+            this.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+    });
+
+    // 初始化输入框值为空字符串（避免初始值为 undefined）
+    input.value = '';
+}
+document.addEventListener('DOMContentLoaded', hookInput);
+
 // 显示详情 - 修改为支持自定义API
 async function showDetails(id, vod_name, sourceCode) {
     // 密码保护校验
@@ -927,7 +971,10 @@ async function showDetails(id, vod_name, sourceCode) {
             apiParams = '&source=' + sourceCode;
         }
         
-        const response = await fetch('/api/detail?id=' + encodeURIComponent(id) + apiParams);
+        // Add a timestamp to prevent caching
+        const timestamp = new Date().getTime();
+        const cacheBuster = `&_t=${timestamp}`;
+        const response = await fetch(`/api/detail?id=${encodeURIComponent(id)}${apiParams}${cacheBuster}`);
         
         const data = await response.json();
         
@@ -1007,8 +1054,19 @@ function playVideo(url, vod_name, sourceCode, episodeIndex = 0) {
     // 获取当前路径作为返回页面
     let currentPath = window.location.href;
     
+    // 如果有ID参数，也传递过去
+    let videoId = '';
+    try {
+        // 尝试从URL中提取id参数（如果存在）
+        const urlObj = new URL(url);
+        videoId = urlObj.searchParams.get('id') || '';
+    } catch (e) {
+        // 忽略错误
+        console.log('解析视频URL获取ID失败:', e);
+    }
+    
     // 构建播放页面URL，使用watch.html作为中间跳转页
-    let watchUrl = `watch.html?id=${currentEpisodes[episodeIndex].id || ''}&source=${sourceCode || ''}&url=${encodeURIComponent(url)}&index=${episodeIndex}&title=${encodeURIComponent(vod_name || '')}`;
+    let watchUrl = `watch.html?id=${videoId}&source=${sourceCode || ''}&url=${encodeURIComponent(url)}&index=${episodeIndex}&title=${encodeURIComponent(vod_name || '')}`;
     
     // 添加返回URL参数
     watchUrl += `&back=${encodeURIComponent(currentPath)}`;
@@ -1026,8 +1084,8 @@ function playVideo(url, vod_name, sourceCode, episodeIndex = 0) {
         console.error('保存播放状态失败:', e);
     }
     
-    // 在新窗口/标签页中打开播放页面
-    window.open(watchUrl, '_blank');
+    // 在当前标签页中打开播放页面
+    window.location.href = watchUrl;
 }
 
 // 弹出播放器页面
@@ -1046,10 +1104,12 @@ function showVideoPlayer(url) {
     videoPlayerFrame.className = 'fixed w-full h-screen z-40';
     videoPlayerFrame.src = url;
     document.body.appendChild(videoPlayerFrame);
+    // 将焦点移入iframe
+    videoPlayerFrame.focus();
 }
 
 // 关闭播放器页面
-function closeVideoPlayer() {
+function closeVideoPlayer(home = false) {
     videoPlayerFrame = document.getElementById('VideoPlayerFrame');
     if (videoPlayerFrame) {
         videoPlayerFrame.remove();
@@ -1064,6 +1124,10 @@ function closeVideoPlayer() {
         if (localStorage.getItem('doubanEnabled') === 'true') {
             document.getElementById('doubanArea').classList.remove('hidden');
         }
+    }
+    if (home) {
+        // 刷新主页
+        window.location.href = '/'
     }
 }
 
@@ -1447,14 +1511,4 @@ function saveStringAsFile(content, fileName) {
     window.URL.revokeObjectURL(url);
 }
 
-// app.js 或路由文件中
-const authMiddleware = require('./middleware/auth');
-const config = require('./config');
-
-// 对所有请求启用鉴权（按需调整作用范围）
-if (config.auth.enabled) {
-  app.use(authMiddleware);
-}
-
-// 或者针对特定路由
-app.use('/api', authMiddleware);
+// 移除Node.js的require语句，因为这是在浏览器环境中运行的

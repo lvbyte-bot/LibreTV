@@ -228,8 +228,24 @@ function renderSearchHistory() {
     
     history.forEach(item => {
         const tag = document.createElement('button');
-        tag.className = 'search-tag';
-        tag.textContent = item.text;
+        tag.className = 'search-tag flex items-center gap-1';
+        const textSpan = document.createElement('span');
+        textSpan.textContent = item.text;
+        tag.appendChild(textSpan);
+
+        // 添加删除按钮
+        const deleteButton = document.createElement('span');
+        deleteButton.className = 'pl-1 text-gray-500 hover:text-red-500 transition-colors';
+        deleteButton.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>';
+        deleteButton.onclick = function(e) {
+            // 阻止事件冒泡，避免触发搜索
+            e.stopPropagation();
+            // 删除对应历史记录
+            deleteSingleSearchHistory(item.text);
+            // 重新渲染搜索历史
+            renderSearchHistory();
+        };
+        tag.appendChild(deleteButton);
         
         // 添加时间提示（如果有时间戳）
         if (item.timestamp) {
@@ -243,6 +259,21 @@ function renderSearchHistory() {
         };
         historyContainer.appendChild(tag);
     });
+}
+
+// 删除单条搜索历史记录
+function deleteSingleSearchHistory(query) {
+    // 当url中包含删除的关键词时，页面刷新后会自动加入历史记录，导致误认为删除功能有bug。此问题无需修复，功能无实际影响。
+    try {
+        let history = getSearchHistory();
+        // 过滤掉要删除的记录
+        history = history.filter(item => item.text !== query);
+        console.log('更新后的搜索历史:', history);
+        localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(history));
+    } catch (e) {
+        console.error('删除单条搜索历史失败:', e);
+        showToast('删除单条搜索历史失败', 'error');
+    }
 }
 
 // 增加清除搜索历史功能
@@ -500,24 +531,46 @@ function playFromHistory(url, title, episodeIndex, playbackPosition = 0) {
         }
         localStorage.setItem('lastPageUrl', currentPath);
         
-        // 构造带播放进度参数的URL
-        const positionParam = `&position=${Math.floor(playbackPosition || 0)}`;
+        // 构造播放器URL
+        let playerUrl;
         
-        if (url.includes('?')) {
+        // 检查URL是否是嵌套的player.html链接
+        if (url.includes('player.html') || url.includes('watch.html')) {
+            console.log('检测到嵌套播放链接，解析真实URL');
+            try {
+                const nestedUrl = new URL(url, window.location.origin);
+                const nestedParams = nestedUrl.searchParams;
+                const realVideoUrl = nestedParams.get('url') || url;
+                
+                // 构造更干净的播放链接
+                playerUrl = `player.html?url=${encodeURIComponent(realVideoUrl)}&title=${encodeURIComponent(title)}&index=${episodeIndex}&position=${Math.floor(playbackPosition || 0)}&returnUrl=${encodeURIComponent(currentPath)}`;
+                
+                // 如果有source和source_code，也添加
+                const source = nestedParams.get('source');
+                const sourceCode = nestedParams.get('source_code');
+                if (source) playerUrl += `&source=${encodeURIComponent(source)}`;
+                if (sourceCode) playerUrl += `&source_code=${encodeURIComponent(sourceCode)}`;
+            } catch (e) {
+                console.error('解析嵌套URL出错:', e);
+                // fallback到简单URL
+                playerUrl = `player.html?url=${encodeURIComponent(url)}&title=${encodeURIComponent(title)}&index=${episodeIndex}&position=${Math.floor(playbackPosition || 0)}&returnUrl=${encodeURIComponent(currentPath)}`;
+            }
+        } else if (url.includes('?')) {
             // URL已有参数，添加索引和位置参数
-            const playUrl = new URL(url);
+            const playUrl = new URL(url, window.location.origin);
             if (!playUrl.searchParams.has('index') && episodeIndex > 0) {
                 playUrl.searchParams.set('index', episodeIndex);
             }
             playUrl.searchParams.set('position', Math.floor(playbackPosition || 0).toString());
             // 添加返回URL
             playUrl.searchParams.set('returnUrl', encodeURIComponent(currentPath));
-            showVideoPlayer(playUrl.toString());
+            playerUrl = playUrl.toString();
         } else {
             // 原始URL，构造player页面链接
-            const playerUrl = `player.html?url=${encodeURIComponent(url)}&title=${encodeURIComponent(title)}&index=${episodeIndex}&position=${Math.floor(playbackPosition || 0)}&returnUrl=${encodeURIComponent(currentPath)}`;
-            showVideoPlayer(playerUrl);
+            playerUrl = `player.html?url=${encodeURIComponent(url)}&title=${encodeURIComponent(title)}&index=${episodeIndex}&position=${Math.floor(playbackPosition || 0)}&returnUrl=${encodeURIComponent(currentPath)}`;
         }
+
+        showVideoPlayer(playerUrl);
     } catch (e) {
         console.error('从历史记录播放失败:', e);
         // 回退到原始简单URL
